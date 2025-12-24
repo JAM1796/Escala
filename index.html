@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestão de Escala Médica - BIOCOR</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Import Map -->
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "lucide-react": "https://esm.sh/lucide-react@0.292.0",
+        "firebase/app": "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js"
+      }
+    }
+    </script>
+
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        body { background-color: #f1f5f9; font-family: 'Inter', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { height: 6px; width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        
+        .loading-screen {
+            display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; color: #475569;
+        }
+        /* Animações Suaves */
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <div class="loading-screen">
+            <svg class="animate-spin h-10 w-10 text-emerald-600 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p class="font-semibold text-sm tracking-wide">CARREGANDO SISTEMA...</p>
+        </div>
+    </div>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useMemo } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { initializeApp, getApps, getApp } from 'firebase/app';
+        import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+        import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query } from 'firebase/firestore';
+        import { 
+            Calendar, Clock, User, Users, Plus, AlertCircle, CheckCircle2, 
+            Search, Trash2, X, Save, FileText, ChevronLeft, ChevronRight, 
+            DownloadCloud, UploadCloud, Sparkles, MessageSquare, 
+            Loader2, Database, ShieldAlert, Lock, History, AlertTriangle, 
+            BarChart3, Moon, Sun, Stethoscope
+        } from 'lucide-react';
+
+        // --- CONFIGURAÇÃO ---
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyDcAIe6qMtzclRsvmKzqnNySckT6h0nD1g",
+            authDomain: "biocor-escala.firebaseapp.com",
+            projectId: "biocor-escala",
+            storageBucket: "biocor-escala.firebasestorage.app",
+            messagingSenderId: "576006517338",
+            appId: "1:576006517338:web:fbfbe3d05cef40a8809e63",
+            measurementId: "G-7SSMJ2TH0N"
+        };
+
+        const GEMINI_API_KEY = "AIzaSyBfKB6KbbL3W2WZkl9ugPdKdwp74f30at0"; 
+        const APP_ID = 'biocor-pronto-atendimento-v1';
+
+        let app, auth, db;
+        try {
+            if (!getApps().length) { app = initializeApp(FIREBASE_CONFIG); } else { app = getApp(); }
+            auth = getAuth(app);
+            db = getFirestore(app);
+        } catch (error) { console.error("Erro Firebase:", error); }
+
+        // --- ESTRUTURA ORGANIZACIONAL ---
+        const SHIFT_GROUPS = [
+            { id: 'g_pa_dia', name: 'PA - Diurno', time: '07:00 - 19:00', color: 'bg-sky-100 text-sky-800 border-sky-200', icon: <Sun size={16}/> },
+            { id: 'g_horizontal', name: 'Horizontal', time: '09:00 - 21:00', color: 'bg-emerald-100 text-emerald-800 border-emerald-200', icon: <Stethoscope size={16}/> },
+            { id: 'g_pa_noite', name: 'PA - Noturno', time: '19:00 - 07:00', color: 'bg-indigo-100 text-indigo-900 border-indigo-200', icon: <Moon size={16}/> },
+        ];
+
+        const ROLES = [
+            { id: 'pa_dia', groupId: 'g_pa_dia', name: 'Integral (12h)', time: '07:00 - 19:00' },
+            { id: 'pa_dia_manha', groupId: 'g_pa_dia', name: 'Manhã (6h)', time: '07:00 - 13:00' }, 
+            { id: 'pa_dia_tarde', groupId: 'g_pa_dia', name: 'Tarde (6h)', time: '13:00 - 19:00' }, 
+            { id: 'horizontal', groupId: 'g_horizontal', name: 'Rotina (12h)', time: '09:00 - 21:00' },
+            { id: 'horizontal_manha', groupId: 'g_horizontal', name: 'Rotina Manhã (6h)', time: '09:00 - 15:00' },
+            { id: 'horizontal_tarde', groupId: 'g_horizontal', name: 'Rotina Tarde (6h)', time: '15:00 - 21:00' },
+            { id: 'pa_noite', groupId: 'g_pa_noite', name: 'Integral (12h)', time: '19:00 - 07:00' },
+        ];
+
+        const normalizeString = (str) => {
+            if (!str) return "";
+            return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+        };
+
+        // --- CORPO CLÍNICO AUTORIZADO ---
+        const DOCTORS_MOCK = [
+            { id: 'maria_m', name: 'Dra. Maria Mameluque', specialty: 'Horizontal / PA', allowedHorizontal: true },
+            { id: 'renan', name: 'Dr. Renan Salgado', specialty: 'Horizontal / PA', allowedHorizontal: true },
+            { id: 'felipe', name: 'Dr. Felipe Ferrari', specialty: 'Horizontal / PA', allowedHorizontal: true },
+            { id: 'fabiano', name: 'Dr. Fabiano Argeu', specialty: 'Horizontal / PA', allowedHorizontal: true },
+            { id: 'sergio_diniz', name: 'Dr. Sérgio Diniz', specialty: 'Horizontal / PA', allowedHorizontal: true },
+            { id: 'luiz', name: 'Dr. Luiz Siqueira', specialty: 'Horizontal / PA', allowedHorizontal: true },
+            { id: 'clara', name: 'Dra. Clara Machado', specialty: 'Horizontal / PA', allowedHorizontal: true },
+            { id: 'paulo', name: 'Dr. Paulo Victor', specialty: 'Horizontal / PA', allowedHorizontal: true },
+            { id: 'wellington', name: 'Dr. Wellington', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'ana_p', name: 'Dra. Ana Paula', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'bruna', name: 'Dra. Bruna Pimenta', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'cassia', name: 'Dra. Cassia Caetano', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'daniela', name: 'Dra. Daniela Alves', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'gabriela_g', name: 'Dra. Gabriela Góis', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'gabriela_r', name: 'Dra. Gabriela Rangel', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'gabriela_o', name: 'Dra. Gabriela Ourivio', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'hugo', name: 'Dr. Hugo Duarte', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'joao', name: 'Dr. João Ataide', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'juliana', name: 'Dra. Juliana', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'larissa', name: 'Dra. Larissa Mendes', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'marina', name: 'Dra. Marina Eto', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'natalia', name: 'Dra. Natalia Araujo', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'patricia', name: 'Dra. Patrícia', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'rafaela', name: 'Dra. Rafaela Vasconcelos', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'thaynara', name: 'Dra. Thaynara', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'fernanda', name: 'Dra. Fernanda Freire', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'isabela_n', name: 'Dra. Isabela Nogueira', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'isabela_g', name: 'Dra. Isabela Gomes', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'guilherme', name: 'Dr. Guilherme Paiva', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'leticia', name: 'Dra. Leticia Batista', specialty: 'Plantonista PA', allowedHorizontal: false },
+            { id: 'rafael', name: 'Dr. Rafael Prates', specialty: 'Plantonista PA', allowedHorizontal: false },
+        ].sort((a, b) => a.name.localeCompare(b.name));
+
+        const DECEMBER_DATA_RAW = `2025-12-01,Manha,Dra. Juliana\n2025-12-01,Tarde,Dr. Paulo Vitor\n2025-12-01,Horizontal,Dr. Fabiano\n2025-12-01,Horizontal,Dra. Maria Mameluque\n2025-12-01,Noturno,Dra. Clara\n2025-12-01,Noturno,Dra. Fernanda\n2025-12-02,Manha,Dra. Thaynara\n2025-12-02,Tarde,Dr. Felipe\n2025-12-02,Horizontal,Dr. Fabiano\n2025-12-02,Horizontal,Dra. Clara\n2025-12-02,Noturno,Dra. Gabriela Ourivio\n2025-12-02,Noturno,Dra. Cassia Caetano\n2025-12-03,Manha,Dr. Paulo Vitor\n2025-12-03,Tarde,Dr. Renan\n2025-12-03,Horizontal,Dr. Sérgio\n2025-12-03,Horizontal,Dr. Luiz\n2025-12-03,Noturno,Dra. Ana Paula\n2025-12-03,Noturno,Dra. Clara\n2025-12-04,Manha,Dra. Patrícia\n2025-12-04,Tarde,Dra. Juliana\n2025-12-04,Horizontal,Dr. Sérgio\n2025-12-04,Horizontal,Dr. Luiz\n2025-12-04,Noturno,Dr. Wellington\n2025-12-04,Noturno,Dr. Felipe\n2025-12-05,Manha,Dra. Bruna\n2025-12-05,Tarde,Dr. Sérgio\n2025-12-05,Horizontal,Dr. Paulo Vitor\n2025-12-05,Noturno,Dra. Larissa\n2025-12-05,Noturno,Dr. João Ataide\n2025-12-06,Manha,Dra. Natalia Araujo\n2025-12-06,Tarde,Dra. Bruna\n2025-12-06,Noturno,Dra. Gabriela Ourivio\n2025-12-06,Noturno,Dra. Thaynara\n2025-12-07,Manha,Dra. Natalia Araujo\n2025-12-07,Tarde,Dr. Sérgio Diniz\n2025-12-07,Noturno,Dra. Fernanda\n2025-12-07,Noturno,Dr. Felipe\n2025-12-08,Manha,Dr. Rafael\n2025-12-08,Tarde,Dr. Paulo Vitor\n2025-12-08,Horizontal,Dr. Fabiano\n2025-12-08,Horizontal,Dra. Clara\n2025-12-08,Noturno,Dra. Cassia\n2025-12-08,Noturno,Dra. Ana Paula\n2025-12-09,Manha,Dra. Thaynara\n2025-12-09,Tarde,Dr. Felipe\n2025-12-09,Horizontal,Dr. Fabiano\n2025-12-09,Horizontal,Dra. Clara\n2025-12-09,Noturno,Dra. Rafaela\n2025-12-09,Noturno,Dra. Cassia Caetano\n2025-12-10,Manha,Dr. Paulo Vitor\n2025-12-10,Tarde,Dr. Renan\n2025-12-10,Horizontal,Dr. Sérgio\n2025-12-10,Horizontal,Dr. Luiz\n2025-12-10,Noturno,Dra. Ana Paula\n2025-12-10,Noturno,Dra. Clara\n2025-12-11,Manha,Dra. Patrícia\n2025-12-11,Tarde,Dra. Juliana\n2025-12-11,Horizontal,Dr. Sérgio\n2025-12-11,Horizontal,Dr. Luiz\n2025-12-11,Noturno,Dra. Fernanda Freire\n2025-12-11,Noturno,Dr. Felipe\n2025-12-12,Manha,Dra. Patrícia\n2025-12-12,Tarde,Dra. Bruna\n2025-12-12,Horizontal,Dr. Paulo Vitor\n2025-12-12,Noturno,Dra. Maria Mameluque\n2025-12-12,Noturno,Dra. Marina Eto\n2025-12-13,Manha,Dr. Felipe\n2025-12-13,Tarde,Dra. Patrícia\n2025-12-13,Noturno,Dra. Gabriela Gois\n2025-12-13,Noturno,Dr. Fabiano\n2025-12-14,Manha,Dra. Clara\n2025-12-14,Tarde,Dra. Leticia Batista\n2025-12-14,Noturno,Dr. Guilherme Paiva\n2025-12-14,Noturno,Dra. Juliana\n2025-12-15,Manha,Dr. Rafael Prates\n2025-12-15,Tarde,Dr. Paulo Vitor\n2025-12-15,Horizontal,Dr. Fabiano\n2025-12-15,Horizontal,Dra. Maria Mameluque\n2025-12-15,Noturno,Dra. Fernanda\n2025-12-15,Noturno,Dra. Clara\n2025-12-16,Manha,Dra. Thaynara\n2025-12-16,Tarde,Dr. Felipe Ferrari\n2025-12-16,Horizontal,Dr. Fabiano\n2025-12-16,Horizontal,Dra. Clara\n2025-12-16,Noturno,Dra. Gabriela Ourivio\n2025-12-16,Noturno,Dra. Cassia\n2025-12-17,Manha,Dr. Paulo Vitor\n2025-12-17,Tarde,Dr. Renan\n2025-12-17,Horizontal,Dr. Sérgio\n2025-12-17,Horizontal,Dr. Luiz\n2025-12-17,Noturno,Dra. Ana Paula\n2025-12-17,Noturno,Dra. Clara\n2025-12-18,Manha,Dra. Patrícia\n2025-12-18,Tarde,Dra. Juliana\n2025-12-18,Horizontal,Dr. Sérgio\n2025-12-18,Horizontal,Dr. Luiz\n2025-12-18,Noturno,Dr. Wellington\n2025-12-18,Noturno,Dr. Felipe\n2025-12-19,Manha,Dra. Bruna\n2025-12-19,Tarde,Dr. Sérgio\n2025-12-19,Horizontal,Dr. Paulo Vitor\n2025-12-19,Noturno,Dra. Gabriela Rangel\n2025-12-19,Noturno,Dra. Juliana\n2025-12-20,Manha,Dr. Renan\n2025-12-20,Tarde,Dra. Ana Paula\n2025-12-20,Noturno,Dra. Rafaela\n2025-12-20,Noturno,Dra. Thaynara\n2025-12-21,Manha,Dra. Ana Paula\n2025-12-21,Tarde,Dra. Isabela Nogueira\n2025-12-21,Noturno,Dra. Isabela Gomes\n2025-12-21,Noturno,Dra. Clara\n2025-12-22,Manha,Dra. Juliana\n2025-12-22,Tarde,Dr. Paulo Vitor\n2025-12-22,Horizontal,Dr. Fabiano\n2025-12-22,Horizontal,Dra. Clara\n2025-12-22,Noturno,Dra. Cassia\n2025-12-22,Noturno,Dra. Ana Paula\n2025-12-23,Manha,Dra. Thaynara\n2025-12-23,Tarde,Dr. Felipe\n2025-12-23,Horizontal,Dr. Fabiano\n2025-12-23,Horizontal,Dra. Clara\n2025-12-23,Noturno,Dra. Rafaela\n2025-12-23,Noturno,Dra. Cassia Caetano\n2025-12-24,Manha,Dr. Paulo Vitor\n2025-12-24,Tarde,Dr. Renan\n2025-12-24,Horizontal,Dr. Sérgio\n2025-12-24,Horizontal,Dr. Luiz\n2025-12-24,Noturno,Dra. Ana Paula\n2025-12-24,Noturno,Dra. Clara\n2025-12-25,Manha,Dra. Patrícia\n2025-12-25,Tarde,Dra. Juliana\n2025-12-25,Horizontal,Dr. Sérgio\n2025-12-25,Horizontal,Dr. Luiz\n2025-12-25,Noturno,Dra. Fernanda Freire\n2025-12-25,Noturno,Dr. Felipe\n2025-12-26,Manha,Dra. Patrícia\n2025-12-26,Tarde,Dra. Bruna\n2025-12-26,Horizontal,Dr. Paulo Vitor\n2025-12-26,Noturno,Dra. Cassia\n2025-12-26,Noturno,Dra. Gabriela Gois\n2025-12-27,Manha,Dra. Maria Mameluque\n2025-12-27,Tarde,Dra. Daniela Alves\n2025-12-27,Noturno,Dra. Isabela Gomes\n2025-12-27,Noturno,Dra. Larissa\n2025-12-28,Manha,Dr. Paulo Vitor\n2025-12-28,Tarde,Dr. Hugo Duarte\n2025-12-28,Noturno,Dra. Cassia Caetano\n2025-12-28,Noturno,Dra. Rafaela\n2025-12-29,Manha,Dra. Juliana\n2025-12-29,Tarde,Dr. Paulo Vitor\n2025-12-29,Horizontal,Dr. Fabiano\n2025-12-29,Horizontal,Dra. Maria Mameluque\n2025-12-29,Noturno,Dra. Clara\n2025-12-29,Noturno,Dra. Fernanda\n2025-12-30,Manha,Dra. Thaynara\n2025-12-30,Tarde,Dr. Felipe\n2025-12-30,Horizontal,Dr. Fabiano\n2025-12-30,Horizontal,Dra. Clara\n2025-12-30,Noturno,Dra. Gabriela Ourivio\n2025-12-30,Noturno,Dra. Cassia Caetano\n2025-12-31,Manha,Dr. Paulo Vitor\n2025-12-31,Tarde,Dr. Renan\n2025-12-31,Horizontal,Dr. Sérgio\n2025-12-31,Horizontal,Dr. Luiz\n2025-12-31,Noturno,Dra. Ana Paula\n2025-12-31,Noturno,Dra. Clara`;
+
+        const getLocalDate = () => {
+            const d = new Date();
+            d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+            return d.toISOString().split('T')[0];
+        };
+
+        const StatusBadge = ({ status }) => {
+            const styles = {
+                'confirmado': 'bg-green-100 text-green-700 border-green-200',
+                'pendente': 'bg-amber-100 text-amber-700 border-amber-200',
+                'troca': 'bg-purple-100 text-purple-700 border-purple-200',
+            };
+            return (
+                <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full border ${styles[status] || styles['pendente']}`}>
+                    {status === 'confirmado' ? 'OK' : status}
+                </span>
+            );
+        };
+
+        // --- COMPONENTE PRINCIPAL ---
+        function MedicalScaleManager() {
+            const [shifts, setShifts] = useState([]);
+            const [selectedDate, setSelectedDate] = useState(getLocalDate());
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+            const [isCopilotOpen, setIsCopilotOpen] = useState(false);
+            const [isStatsOpen, setIsStatsOpen] = useState(false);
+            
+            const [selectedShift, setSelectedShift] = useState(null);
+            const [deleteConfirmation, setDeleteConfirmation] = useState(false);
+            const [toast, setToast] = useState(null);
+            const [user, setUser] = useState(null);
+            const [authError, setAuthError] = useState(null);
+            
+            const [aiResult, setAiResult] = useState("");
+            const [aiLoading, setAiLoading] = useState(false);
+            const [importText, setImportText] = useState("");
+            const [selectedGroup, setSelectedGroup] = useState('g_pa_dia');
+            const [form, setForm] = useState({ 
+                doctorId: '', roleId: 'pa_dia', date: getLocalDate(), status: 'confirmado', obs: ''
+            });
+
+            // AUTH & SYNC
+            useEffect(() => {
+                signInAnonymously(auth).catch(err => {
+                    console.warn("Erro Auth:", err);
+                    setAuthError('falha_login');
+                });
+                return onAuthStateChanged(auth, setUser);
+            }, []);
+
+            useEffect(() => {
+                if (!user && !authError) return;
+                const q = query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'shifts'));
+                const unsub = onSnapshot(q, snap => {
+                    setShifts(snap.docs.map(d => ({...d.data(), id: d.id})));
+                }, err => {
+                    console.error("Erro Firestore:", err);
+                    if(err.code === 'permission-denied') setAuthError('permissao');
+                });
+                return unsub;
+            }, [user, authError]);
+
+            // STATS CALCULATION
+            const stats = useMemo(() => {
+                const map = {};
+                shifts.forEach(s => {
+                    if (!map[s.doctorId]) map[s.doctorId] = { total: 0, weekend: 0, night: 0, horizontal: 0 };
+                    const role = ROLES.find(r => r.id === s.roleId);
+                    const isWknd = new Date(s.date + 'T12:00:00').getDay() === 0 || new Date(s.date + 'T12:00:00').getDay() === 6;
+                    
+                    map[s.doctorId].total++;
+                    if(isWknd) map[s.doctorId].weekend++;
+                    if(role?.groupId === 'g_pa_noite') map[s.doctorId].night++;
+                    if(role?.groupId === 'g_horizontal') map[s.doctorId].horizontal++;
+                });
+                return Object.entries(map)
+                    .map(([id, data]) => ({ 
+                        ...data, 
+                        name: DOCTORS_MOCK.find(d => d.id === id)?.name || 'Desconhecido' 
+                    }))
+                    .sort((a,b) => b.total - a.total);
+            }, [shifts]);
+
+            // ACTIONS
+            const showToast = (type, msg) => {
+                setToast({ type, msg });
+                setTimeout(() => setToast(null), 3000);
+            };
+
+            const isWeekend = (dateString) => {
+                const day = new Date(dateString + 'T12:00:00').getDay();
+                return day === 0 || day === 6; 
+            };
+
+            const formatDateBR = (dateString) => {
+                if(!dateString) return '--/--';
+                const [y, m, d] = dateString.split('-');
+                return `${d}/${m}`;
+            }
+
+            const openNewModal = (groupId) => {
+                setDeleteConfirmation(false);
+                const initialGroup = groupId || 'g_pa_dia';
+                setSelectedGroup(initialGroup);
+                const defaultRole = ROLES.find(r => r.groupId === initialGroup)?.id;
+                setSelectedShift(null);
+                setForm({ doctorId: '', roleId: defaultRole, date: selectedDate, status: 'confirmado', obs: '' });
+                setIsModalOpen(true);
+            };
+
+            const openEditModal = (shift) => {
+                setDeleteConfirmation(false);
+                const roleConfig = ROLES.find(r => r.id === shift.roleId);
+                if(roleConfig) setSelectedGroup(roleConfig.groupId);
+                setSelectedShift(shift);
+                setForm({
+                    doctorId: shift.doctorId,
+                    roleId: shift.roleId,
+                    date: shift.date,
+                    status: shift.status,
+                    obs: shift.obs || ''
+                });
+                setIsModalOpen(true);
+            };
+
+            // VALIDATION & SAVE
+            const handleSaveShift = async () => {
+                if (!form.doctorId) return showToast('error', "Selecione um médico.");
+                const doctor = DOCTORS_MOCK.find(d => d.id === form.doctorId);
+                const roleConfig = ROLES.find(r => r.id === form.roleId);
+                const groupConfig = SHIFT_GROUPS.find(g => g.id === roleConfig.groupId);
+
+                // Regra 1: Horizontal Hard Lock
+                if (groupConfig.id === 'g_horizontal' && !doctor.allowedHorizontal) {
+                    return showToast('error', `BLOQUEADO: ${doctor.name} não tem permissão para Horizontal.`);
+                }
+
+                // Regra 2: Anti-Fadiga (Aviso de Dobra)
+                const isDoubling = shifts.some(s => s.date === form.date && s.doctorId === form.doctorId && s.id !== selectedShift?.id);
+                if (isDoubling) {
+                    if(!confirm(`⚠️ ALERTA DE FADIGA: ${doctor.name} já tem outro plantão neste dia. Confirmar dobra?`)) return;
+                }
+
+                try {
+                    const payload = { 
+                        ...form, 
+                        history: [...(selectedShift?.history || []), { date: new Date().toISOString(), action: selectedShift ? 'Editado' : 'Criado' }]
+                    };
+                    
+                    const docId = selectedShift ? selectedShift.id : Date.now().toString();
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'shifts', docId), { id: docId, ...payload });
+                    
+                    showToast('success', 'Escala atualizada.');
+                    setIsModalOpen(false);
+                } catch (e) {
+                    console.error(e);
+                    showToast('error', 'Erro de conexão.');
+                }
+            };
+
+            const handleDelete = async (id) => {
+                if (!id) return;
+                try {
+                    await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'shifts', id));
+                    setIsModalOpen(false);
+                    showToast('success', 'Plantão removido.');
+                } catch (e) {
+                    console.error(e);
+                    showToast('error', 'Erro ao remover.');
+                }
+            };
+
+            const handleProcessImport = async (textOverride) => {
+                const raw = textOverride || importText;
+                if(!raw) return;
+
+                const lines = raw.trim().split('\n');
+                const batch = [];
+                let successCount = 0;
+
+                lines.forEach((line, idx) => {
+                    if (!line.trim()) return;
+                    const parts = line.split(',');
+                    if(parts.length < 3) return console.log('Linha ignorada:', idx);
+
+                    const date = parts[0].trim();
+                    const type = parts[1].trim();
+                    const docNameRaw = parts[2].trim();
+                    const cleanName = normalizeString(docNameRaw);
+
+                    const doctor = DOCTORS_MOCK.find(d => {
+                        const dbName = normalizeString(d.name.replace('Dr. ', '').replace('Dra. ', ''));
+                        if (dbName === cleanName) return true;
+                        if (dbName.includes(cleanName) || cleanName.includes(dbName)) return true;
+                        if (cleanName.includes('filipe') && dbName.includes('felipe')) return true;
+                        if (cleanName.includes('vitor') && dbName.includes('victor')) return true;
+                        return false;
+                    });
+
+                    if(doctor) {
+                        let roleId = 'pa_dia';
+                        const t = normalizeString(type);
+                        if(t.includes('manha')) roleId = 'pa_dia_manha';
+                        else if(t.includes('tarde')) roleId = 'pa_dia_tarde';
+                        else if(t.includes('noite') || t.includes('noturno')) roleId = 'pa_noite';
+                        else if(t.includes('horizontal')) roleId = 'horizontal';
+
+                        batch.push({
+                            id: Math.random().toString(36).substr(2, 9),
+                            date, doctorId: doctor.id, roleId, status: 'confirmado',
+                            history: [{ date: new Date().toISOString(), action: 'Importado (Auto)' }]
+                        });
+                        successCount++;
+                    }
+                });
+
+                if(batch.length > 0 && confirm(`Importar ${batch.length} plantões para Dezembro?`)) {
+                    try {
+                        await Promise.all(batch.map(s => setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'shifts', s.id), s)));
+                        showToast('success', `${batch.length} importados!`);
+                        setSelectedDate(batch[0].date);
+                        setIsImportModalOpen(false);
+                    } catch(e) {
+                        console.error(e);
+                        showToast('error', 'Falha na importação.');
+                    }
+                } else {
+                    showToast('error', `Nenhum dado válido. (Encontrados: ${successCount})`);
+                }
+            };
+
+            // AI REPORT
+            const handleGenerateAIReport = async (mode) => {
+                setAiLoading(true);
+                setAiResult("");
+                const relevantShifts = shifts.filter(s => s.date === selectedDate).map(s => {
+                    const doc = DOCTORS_MOCK.find(d => d.id === s.doctorId);
+                    const role = ROLES.find(r => r.id === s.roleId);
+                    return { medico: doc?.name, turno: role?.name, grupo: SHIFT_GROUPS.find(g => g.id === role?.groupId)?.name };
+                });
+                const prompt = `Aja como coordenador médico. Gere um relatório ${mode} para ${formatDateBR(selectedDate)}. Dados: ${JSON.stringify(relevantShifts)}`;
+                
+                try {
+                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                    });
+                    const data = await res.json();
+                    setAiResult(data.candidates?.[0]?.content?.parts?.[0]?.text || "Erro na IA.");
+                } catch (e) { setAiResult("Erro conexão IA."); }
+                setAiLoading(false);
+            };
+
+            // RENDER UI
+            return (
+                <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-20">
+                    <header className="bg-slate-900 text-white shadow-lg sticky top-0 z-20">
+                        <div className="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
+                            <div className="flex items-center gap-3">
+                                <div className="bg-emerald-500 p-2 rounded-lg shadow-lg shadow-emerald-500/20"><FileText size={20}/></div>
+                                <div>
+                                    <h1 className="font-bold text-lg tracking-tight">Escala BIOCOR</h1>
+                                    <span className="text-[10px] uppercase tracking-wider text-emerald-400 font-bold">Pronto Atendimento</span>
+                                </div>
+                            </div>
+                            <div className="flex gap-2">
+                                <button onClick={() => setIsStatsOpen(true)} className="bg-slate-700 p-2 rounded-lg hover:bg-slate-600 transition-colors" title="Estatísticas"><BarChart3 size={18}/></button>
+                                <button onClick={() => setIsImportModalOpen(true)} className="bg-slate-700 p-2 rounded-lg hover:bg-slate-600 transition-colors" title="Importar"><UploadCloud size={18}/></button>
+                                <button onClick={() => openNewModal()} className="bg-emerald-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-emerald-500 flex items-center gap-2 shadow-lg shadow-emerald-900/20 transition-all active:scale-95"><Plus size={18}/> <span className="hidden sm:inline">Plantão</span></button>
+                            </div>
+                        </div>
+                        <div className="bg-slate-800 p-2 flex justify-center gap-6 items-center shadow-inner">
+                             <button onClick={() => { const d = new Date(selectedDate); d.setDate(d.getDate()-1); setSelectedDate(d.toISOString().split('T')[0])}} className="text-slate-400 hover:text-white transition-colors"><ChevronLeft size={24}/></button>
+                             <div className="flex flex-col items-center">
+                                 <input type="date" value={selectedDate} onChange={e=>setSelectedDate(e.target.value)} className="bg-transparent text-white font-bold text-lg text-center outline-none cursor-pointer"/>
+                                 <span className="text-[10px] text-emerald-400 uppercase font-bold tracking-widest">{new Date(selectedDate + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long' })}</span>
+                             </div>
+                             <button onClick={() => { const d = new Date(selectedDate); d.setDate(d.getDate()+1); setSelectedDate(d.toISOString().split('T')[0])}} className="text-slate-400 hover:text-white transition-colors"><ChevronRight size={24}/></button>
+                        </div>
+                    </header>
+
+                    <main className="max-w-7xl mx-auto px-4 py-6">
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            {SHIFT_GROUPS.map(group => {
+                                const dayShifts = shifts.filter(s => {
+                                    const role = ROLES.find(r => r.id === s.roleId);
+                                    return s.date === selectedDate && role?.groupId === group.id;
+                                });
+                                if (group.id === 'g_horizontal' && isWeekend(selectedDate) && dayShifts.length === 0) return null;
+
+                                return (
+                                    <div key={group.id} className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden h-full">
+                                        <div className={`px-4 py-3 border-b ${group.color} bg-opacity-20 flex justify-between items-center`}>
+                                            <div className="flex items-center gap-2">
+                                                {group.icon}
+                                                <h3 className="font-bold text-slate-800 text-sm uppercase">{group.name}</h3>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-[10px] font-mono bg-white/50 px-1.5 py-0.5 rounded text-slate-600">{group.time}</span>
+                                                <button onClick={() => openNewModal(group.id)} className="hover:bg-white/50 rounded-full p-1 transition-colors"><Plus size={16} className="text-slate-600"/></button>
+                                            </div>
+                                        </div>
+                                        <div className="p-3 space-y-2 bg-slate-50/50 flex-1">
+                                            {dayShifts.map(shift => {
+                                                const doc = DOCTORS_MOCK.find(d => d.id === shift.doctorId);
+                                                const roleConfig = ROLES.find(r => r.id === shift.roleId);
+                                                if(!doc) return null;
+                                                return (
+                                                    <div key={shift.id} onClick={() => openEditModal(shift)} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm hover:shadow-md cursor-pointer transition-all hover:border-emerald-400 group relative">
+                                                        <div className="flex justify-between items-start mb-2">
+                                                            <div className="flex items-center gap-3">
+                                                                <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 font-bold text-xs border border-slate-200 shadow-inner">
+                                                                    {doc.name.substring(4, 6)}
+                                                                </div>
+                                                                <div>
+                                                                    <div className="font-bold text-sm text-slate-800 leading-tight">{doc.name}</div>
+                                                                    <span className="text-[10px] text-slate-500 font-medium">{doc.specialty}</span>
+                                                                </div>
+                                                            </div>
+                                                            <StatusBadge status={shift.status} />
+                                                        </div>
+                                                        <div className="flex flex-wrap items-center gap-2 mt-2 pt-2 border-t border-slate-50">
+                                                            <span className="text-[10px] px-2 py-0.5 rounded border bg-slate-50 text-slate-600 border-slate-200 font-medium flex items-center gap-1">
+                                                                <Clock size={10}/> {roleConfig?.time.split(' - ')[0]}h
+                                                            </span>
+                                                            <span className="text-[10px] px-2 py-0.5 rounded border bg-white text-slate-500 border-slate-200">
+                                                                {roleConfig?.name.replace(' (12h)', '').replace(' (6h)', '')}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                            {dayShifts.length === 0 && <div className="h-24 flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-lg bg-slate-50"><span className="text-xs font-medium">Sem escala</span></div>}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        
+                        <div className="mt-8 bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+                            <h3 className="font-bold mb-4 flex items-center gap-2 text-slate-700 text-sm uppercase tracking-wide"><History size={18}/> Auditoria de Alterações</h3>
+                            <div className="text-xs space-y-0">
+                                <div className="grid grid-cols-3 font-bold text-slate-400 bg-slate-50 p-2 rounded-t border-b">
+                                    <span>Data Ação</span>
+                                    <span>Dia Escala</span>
+                                    <span>Evento</span>
+                                </div>
+                                {shifts.flatMap(s => (s.history || []).map(h => ({...h, shiftDate: s.date})))
+                                .sort((a,b) => new Date(b.date) - new Date(a.date))
+                                .slice(0, 5)
+                                .map((log, i) => (
+                                    <div key={i} className="grid grid-cols-3 p-2 border-b last:border-0 hover:bg-slate-50 transition-colors">
+                                        <span className="text-slate-500">{new Date(log.date).toLocaleString('pt-BR')}</span>
+                                        <span className="font-bold text-slate-700">{formatDateBR(log.shiftDate)}</span>
+                                        <span className="text-slate-800">{log.action}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </main>
+
+                    {/* MODAL ESTATÍSTICAS (NOVO) */}
+                    {isStatsOpen && (
+                        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm fade-in">
+                            <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden max-h-[90vh] flex flex-col">
+                                <div className="bg-slate-800 p-4 text-white flex justify-between items-center">
+                                    <h3 className="font-bold flex items-center gap-2"><BarChart3 size={20}/> Métricas da Escala</h3>
+                                    <button onClick={() => setIsStatsOpen(false)} className="hover:bg-white/20 p-1 rounded"><X size={20}/></button>
+                                </div>
+                                <div className="p-6 overflow-y-auto">
+                                    <table className="w-full text-sm text-left">
+                                        <thead className="bg-slate-50 text-slate-500 uppercase text-xs">
+                                            <tr>
+                                                <th className="px-4 py-3">Médico</th>
+                                                <th className="px-4 py-3 text-center">Total</th>
+                                                <th className="px-4 py-3 text-center">Noturnos</th>
+                                                <th className="px-4 py-3 text-center">FDS</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100">
+                                            {stats.map((stat, i) => (
+                                                <tr key={i} className="hover:bg-slate-50">
+                                                    <td className="px-4 py-3 font-medium text-slate-800">{stat.name}</td>
+                                                    <td className="px-4 py-3 text-center font-bold text-emerald-600 bg-emerald-50 rounded-lg">{stat.total}</td>
+                                                    <td className="px-4 py-3 text-center text-indigo-600">{stat.night}</td>
+                                                    <td className="px-4 py-3 text-center text-amber-600">{stat.weekend}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL EDITAR */}
+                    {isModalOpen && (
+                        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm fade-in">
+                            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
+                                <div className="bg-slate-800 p-4 text-white flex justify-between items-center">
+                                    <h3 className="font-bold text-lg">Gerenciar Escala</h3>
+                                    <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-white transition-colors"><X size={24}/></button>
+                                </div>
+                                <div className="p-6 space-y-5">
+                                    
+                                    {/* SELETOR DE GRUPO (Abas) */}
+                                    <div className="flex bg-slate-100 p-1 rounded-lg">
+                                        {SHIFT_GROUPS.map(g => (
+                                            <button 
+                                                key={g.id} 
+                                                onClick={() => {
+                                                    setSelectedGroup(g.id);
+                                                    const defaultRole = ROLES.find(r => r.groupId === g.id)?.id;
+                                                    setForm({...form, roleId: defaultRole});
+                                                }}
+                                                className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${selectedGroup === g.id ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                            >
+                                                {g.name.replace(' (Internação)', '').replace('PA - ', '')}
+                                            </button>
+                                        ))}
+                                    </div>
+
+                                    {/* SELETOR DE HORÁRIO (Radio) */}
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Duração do Turno</label>
+                                        <div className="grid grid-cols-1 gap-2">
+                                            {ROLES.filter(r => r.groupId === selectedGroup).map(role => (
+                                                <label 
+                                                    key={role.id} 
+                                                    className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${form.roleId === role.id ? 'border-emerald-500 bg-emerald-50 ring-1 ring-emerald-500' : 'border-slate-200 hover:bg-slate-50'}`}
+                                                >
+                                                    <input 
+                                                        type="radio" 
+                                                        name="role" 
+                                                        checked={form.roleId === role.id} 
+                                                        onChange={() => setForm({...form, roleId: role.id})} 
+                                                        className="hidden" 
+                                                    />
+                                                    <div className="flex-1">
+                                                        <div className="font-medium text-sm text-slate-800">{role.name}</div>
+                                                        <div className="text-xs text-slate-500">{role.time}</div>
+                                                    </div>
+                                                    {form.roleId === role.id && <CheckCircle2 size={18} className="text-emerald-600"/>}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {/* SELETOR DE MÉDICO */}
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 block">Médico Responsável</label>
+                                        <div className="relative">
+                                            <select value={form.doctorId} onChange={e => setForm({...form, doctorId: e.target.value})} className="w-full border border-slate-300 rounded-lg p-3 text-sm bg-white appearance-none focus:ring-2 focus:ring-emerald-500 outline-none">
+                                                <option value="">Selecione...</option>
+                                                {DOCTORS_MOCK.map(d => (
+                                                    <option key={d.id} value={d.id}>
+                                                        {d.name} {(!d.allowedHorizontal && selectedGroup === 'g_horizontal') ? '(Bloqueado Horizontal)' : ''}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            <div className="absolute right-3 top-3 pointer-events-none text-slate-400"><Search size={16}/></div>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex gap-3 pt-2">
+                                        {selectedShift && (
+                                            !deleteConfirmation ? 
+                                            <button 
+                                                onClick={() => setDeleteConfirmation(true)} 
+                                                className="px-4 py-2 text-red-500 border border-red-200 bg-red-50 rounded-lg hover:bg-red-100 flex items-center gap-2 font-medium transition-colors"
+                                            >
+                                                <Trash2 size={18}/>
+                                            </button> :
+                                            <button 
+                                                onClick={() => handleDelete(selectedShift.id)} 
+                                                className="flex-1 bg-red-600 text-white p-2 rounded-lg font-bold hover:bg-red-700 animate-pulse"
+                                            >
+                                                CONFIRMAR?
+                                            </button>
+                                        )}
+                                        {!deleteConfirmation && (
+                                            <button 
+                                                onClick={handleSaveShift} 
+                                                className="flex-1 bg-emerald-600 text-white p-3 rounded-lg font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-200 transition-all active:scale-95 flex justify-center items-center gap-2"
+                                            >
+                                                <Save size={18}/> Salvar Escala
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL IMPORTAR */}
+                    {isImportModalOpen && (
+                        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm fade-in">
+                            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6 space-y-4">
+                                <div className="flex justify-between items-center border-b pb-4">
+                                    <h3 className="font-bold text-lg text-slate-800">Importação de Dados</h3>
+                                    <button onClick={() => setIsImportModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X size={24}/></button>
+                                </div>
+                                
+                                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg">
+                                    <div className="flex items-center gap-2 mb-2 text-emerald-800 font-bold">
+                                        <Database size={18}/>
+                                        <h4>Carga Rápida: Dezembro 2025</h4>
+                                    </div>
+                                    <p className="text-xs text-emerald-600 mb-3">Carregar automaticamente a escala oficial processada do PDF.</p>
+                                    <button onClick={() => handleProcessImport(DECEMBER_DATA_RAW)} className="bg-emerald-600 text-white px-4 py-2.5 rounded-lg font-bold w-full hover:bg-emerald-700 transition-colors shadow-sm">
+                                        Processar Escala PDF
+                                    </button>
+                                </div>
+
+                                <div className="relative">
+                                    <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200"></div></div>
+                                    <div className="relative flex justify-center text-xs uppercase"><span className="bg-white px-2 text-slate-500">Ou Manualmente</span></div>
+                                </div>
+
+                                <textarea 
+                                    value={importText} 
+                                    onChange={e => setImportText(e.target.value)} 
+                                    className="w-full h-32 border border-slate-300 rounded-lg p-3 text-xs font-mono focus:ring-2 focus:ring-emerald-500 outline-none" 
+                                    placeholder="Cole aqui: YYYY-MM-DD, Turno, Nome Médico"
+                                ></textarea>
+                                <button onClick={() => handleProcessImport(null)} className="w-full bg-slate-800 text-white py-2.5 rounded-lg font-bold hover:bg-slate-700 transition-colors">
+                                    Processar Texto Manual
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL IA */}
+                    {isCopilotOpen && (
+                        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm fade-in">
+                            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6 flex flex-col max-h-[80vh]">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h3 className="font-bold flex items-center gap-2 text-purple-700"><Sparkles size={20}/> Assistente IA</h3>
+                                    <button onClick={() => setIsCopilotOpen(false)}><X size={20}/></button>
+                                </div>
+                                {!aiResult ? (
+                                    <div className="space-y-3">
+                                        <button onClick={() => handleGenerateAIReport('whatsapp')} disabled={aiLoading} className="w-full p-4 border border-slate-200 rounded-xl hover:bg-slate-50 text-left flex items-center gap-4 transition-all group">
+                                            <div className="bg-green-100 p-2 rounded-lg text-green-600 group-hover:scale-110 transition-transform"><MessageSquare size={20}/></div>
+                                            <div>
+                                                <div className="font-bold text-slate-700">Gerar Comunicado WhatsApp</div>
+                                                <div className="text-xs text-slate-500">Texto formatado com emojis para o grupo.</div>
+                                            </div>
+                                        </button>
+                                        {aiLoading && <div className="text-center py-8 text-purple-600 flex flex-col items-center gap-2"><Loader2 className="animate-spin" size={32}/><span className="text-xs font-bold">Analisando escala...</span></div>}
+                                    </div>
+                                ) : (
+                                    <div className="flex flex-col h-full">
+                                        <div className="bg-slate-50 p-4 rounded-lg text-xs font-mono whitespace-pre-wrap border border-slate-200 overflow-y-auto flex-1 mb-4">{aiResult}</div>
+                                        <button onClick={() => setAiResult("")} className="text-sm text-slate-500 hover:underline text-center">Voltar</button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {toast && (
+                        <div className={`fixed bottom-6 right-6 px-5 py-3 rounded-xl shadow-2xl text-white font-bold z-50 flex items-center gap-3 animate-bounce ${toast.type === 'success' ? 'bg-emerald-600' : 'bg-red-600'}`}>
+                            {toast.type === 'success' ? <CheckCircle2 size={20}/> : <AlertCircle size={20}/>}
+                            {toast.msg}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<MedicalScaleManager />);
+    </script>
+</body>
+</html>
+
+
