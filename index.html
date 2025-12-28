@@ -5,15 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Gift Hub Pages - Escala Médica</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/lucide-react@0.462.0/dist/umd/lucide-react.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 <body class="bg-slate-100">
   <div id="root"></div>
 
-  <script type="text/babel" data-presets="env,react" data-type="module">
-    import React, { useState, useEffect, useMemo } from "https://esm.sh/react@18";
-    import { createRoot } from "https://esm.sh/react-dom@18/client";
-    import {
+  <script type="text/babel" data-presets="env,react">
+    const { useState, useEffect, useMemo } = React;
+    const { createRoot } = ReactDOM;
+    const lucide = window.lucideReact || window.LucideReact;
+    const {
       Calendar,
       Clock,
       User,
@@ -48,23 +55,7 @@
       Settings,
       ShieldAlert,
       Unlock
-    } from "https://esm.sh/lucide-react@0.462.0";
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-    import {
-      getAuth,
-      signInWithCustomToken,
-      signInAnonymously,
-      onAuthStateChanged
-    } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-    import {
-      getFirestore,
-      collection,
-      doc,
-      setDoc,
-      deleteDoc,
-      onSnapshot,
-      query
-    } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+    } = lucide;
 
     // --- ⚠️ CONFIGURAÇÃO REAL DO MUNDO EXTERNO ⚠️ ---
     const FIREBASE_CONFIG = {
@@ -88,9 +79,9 @@
       if (FIREBASE_CONFIG.apiKey === "SUA_API_KEY_AQUI" && typeof __firebase_config !== "undefined") {
         config = JSON.parse(__firebase_config);
       }
-      app = initializeApp(config);
-      auth = getAuth(app);
-      db = getFirestore(app);
+      app = firebase.initializeApp(config);
+      auth = firebase.auth();
+      db = firebase.firestore();
     } catch (error) {
       console.error("Erro fatal na inicialização do Firebase:", error);
     }
@@ -405,11 +396,11 @@
 
             if (isUserConfig) {
               // Tenta login, se falhar (ex: domínio não autorizado), cai no catch
-              await signInAnonymously(auth);
+              await auth.signInAnonymously();
             } else if (typeof __initial_auth_token !== "undefined" && __initial_auth_token) {
-              await signInWithCustomToken(auth, __initial_auth_token);
+              await auth.signInWithCustomToken(__initial_auth_token);
             } else {
-              await signInAnonymously(auth);
+              await auth.signInAnonymously();
             }
             setAuthError(null);
           } catch (err) {
@@ -420,12 +411,20 @@
           }
         };
         initAuth();
-        const unsubscribe = onAuthStateChanged(auth, (u) => {
+        const unsubscribe = auth.onAuthStateChanged((u) => {
           setUser(u);
           if (u) setIsAuthBypassed(false);
         });
         return () => unsubscribe();
       }, []);
+
+      const getShiftsRef = () =>
+        db
+          .collection("artifacts")
+          .doc(appId)
+          .collection("public")
+          .doc("data")
+          .collection("shifts");
 
       // --- DATA FETCHING (FIRESTORE) ---
       useEffect(() => {
@@ -437,10 +436,7 @@
           return () => clearTimeout(timer);
         }
 
-        const q = query(collection(db, "artifacts", appId, "public", "data", "shifts"));
-
-        const unsubscribe = onSnapshot(
-          q,
+        const unsubscribe = getShiftsRef().onSnapshot(
           (snapshot) => {
             const loadedShifts = snapshot.docs.map((doc) => doc.data());
             setShifts(loadedShifts);
@@ -550,7 +546,7 @@
         };
 
         try {
-          await setDoc(doc(db, "artifacts", appId, "public", "data", "shifts", shiftData.id), shiftData);
+          await getShiftsRef().doc(shiftData.id).set(shiftData);
           setToast({ type: "success", msg: "Escala salva com sucesso!" });
           setIsModalOpen(false);
           setSelectedShift(null);
@@ -563,7 +559,7 @@
       const handleDelete = async (shiftId) => {
         if (!shiftId) return;
         try {
-          await deleteDoc(doc(db, "artifacts", appId, "public", "data", "shifts", shiftId));
+          await getShiftsRef().doc(shiftId).delete();
           setToast({ type: "success", msg: "Escala removida com sucesso!" });
           setIsModalOpen(false);
           setSelectedShift(null);
@@ -603,7 +599,7 @@
           };
 
           try {
-            await setDoc(doc(db, "artifacts", appId, "public", "data", "shifts", shiftData.id), shiftData);
+            await getShiftsRef().doc(shiftData.id).set(shiftData);
           } catch (error) {
             console.error("Erro na importação:", error);
           }
